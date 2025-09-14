@@ -10,7 +10,7 @@ def check_availability_by_doctor(desired_date:DateModel, doctor_name:Literal['ke
     Checking the database if we have availability for the specific doctor.
     The parameters should be mentioned by the user in the query
     """
-    df = pd.read_csv(r"doctor_availability.csv")
+    df = pd.read_csv(r"data/doctor_availability.csv")
     
     #print(df)
     
@@ -26,44 +26,12 @@ def check_availability_by_doctor(desired_date:DateModel, doctor_name:Literal['ke
 
     return output
 @tool
-def check_availability_by_specialization(desired_date:DateModel, specialization:Literal["general_dentist", "cosmetic_dentist", "prosthodontist", "pediatric_dentist","emergency_dentist","oral_surgeon","orthodontist"]):
-    """
-    Checking the database if we have availability for the specific specialization.
-    The parameters should be mentioned by the user in the query
-    """
-    #Dummy data
-    df = pd.read_csv(r"doctor_availability.csv")
-    df['date_slot_time'] = df['date_slot'].apply(lambda input: input.split(' ')[-1])
-    rows = df[(df['date_slot'].apply(lambda input: input.split(' ')[0]) == desired_date.date) & (df['specialization'] == specialization) & (df['is_available'] == True)].groupby(['specialization', 'doctor_name'])['date_slot_time'].apply(list).reset_index(name='available_slots')
-
-    if len(rows) == 0:
-        output = "No availability in the entire day"
-    else:
-        def convert_to_am_pm(time_str):
-            # Split the time string into hours and minutes
-            time_str = str(time_str)
-            hours, minutes = map(int, time_str.split(":"))
-            
-            # Determine AM or PM
-            period = "AM" if hours < 12 else "PM"
-            
-            # Convert hours to 12-hour format
-            hours = hours % 12 or 12
-            
-            # Format the output
-            return f"{hours}:{minutes:02d} {period}"
-        output = f'This availability for {desired_date.date}\n'
-        for row in rows.values:
-            output += row[1] + ". Available slots: \n" + ', \n'.join([convert_to_am_pm(value)for value in row[2]])+'\n'
-
-    return output
-@tool
 def set_appointment(desired_date:DateTimeModel, id_number:IdentificationNumberModel, doctor_name:Literal['kevin anderson','robert martinez','susan davis','daniel miller','sarah wilson','michael green','lisa brown','jane smith','emily johnson','john doe']):
     """
     Set appointment or slot with the doctor.
     The parameters MUST be mentioned by the user in the query.
     """
-    df = pd.read_csv(r"doctor_availability.csv")
+    df = pd.read_csv(r"data/doctor_availability.csv")
    
     from datetime import datetime
     def convert_datetime_format(dt_str):
@@ -71,15 +39,15 @@ def set_appointment(desired_date:DateTimeModel, id_number:IdentificationNumberMo
         #dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
         dt = datetime.strptime(dt_str, "%d-%m-%Y %H:%M")
         
-        # Format the output as 'DD-MM-YYYY H.M' (removing leading zero from hour only)
-        return dt.strftime("%d-%m-%Y %#H.%M")
+        # Format the output as 'DD-MM-YYYY HH:MM' (keep colon format to match CSV)
+        return dt.strftime("%d-%m-%Y %H:%M")
     
     case = df[(df['date_slot'] == convert_datetime_format(desired_date.date))&(df['doctor_name'] == doctor_name)&(df['is_available'] == True)]
     if len(case) == 0:
         return "No available appointments for that particular case"
     else:
         df.loc[(df['date_slot'] == convert_datetime_format(desired_date.date))&(df['doctor_name'] == doctor_name) & (df['is_available'] == True), ['is_available','patient_to_attend']] = [False, id_number.id]
-        df.to_csv(f'availability.csv', index = False)
+        df.to_csv(r'data/doctor_availability.csv', index = False)
 
         return "Successfully done"
 @tool
@@ -88,27 +56,125 @@ def cancel_appointment(date:DateTimeModel, id_number:IdentificationNumberModel, 
     Canceling an appointment.
     The parameters MUST be mentioned by the user in the query.
     """
-    df = pd.read_csv(r"doctor_availability.csv")
+    df = pd.read_csv(r"data/doctor_availability.csv")
     case_to_remove = df[(df['date_slot'] == date.date)&(df['patient_to_attend'] == id_number.id)&(df['doctor_name'] == doctor_name)]
     if len(case_to_remove) == 0:
         return "You don´t have any appointment with that specifications"
     else:
         df.loc[(df['date_slot'] == date.date) & (df['patient_to_attend'] == id_number.id) & (df['doctor_name'] == doctor_name), ['is_available', 'patient_to_attend']] = [True, None]
-        df.to_csv(f'availability.csv', index = False)
+        df.to_csv(r'data/doctor_availability.csv', index = False)
 
         return "Successfully cancelled"
+
+
 @tool
-def reschedule_appointment(old_date:DateTimeModel, new_date:DateTimeModel, id_number:IdentificationNumberModel, doctor_name:Literal['kevin anderson','robert martinez','susan davis','daniel miller','sarah wilson','michael green','lisa brown','jane smith','emily johnson','john doe']):
+def get_user_appointments(id_number: IdentificationNumberModel) -> str:
+    """Get all appointments for a specific user including history.
+    
+    Args:
+        id_number: Patient identification number
     """
-    Rescheduling an appointment.
-    The parameters MUST be mentioned by the user in the query.
-    """
-    #Dummy data
-    df = pd.read_csv(r"doctor_availability.csv")
-    available_for_desired_date = df[(df['date_slot'] == new_date.date)&(df['is_available'] == True)&(df['doctor_name'] == doctor_name)]
-    if len(available_for_desired_date) == 0:
-        return "Not available slots in the desired period"
-    else:
-        cancel_appointment.invoke({'date':old_date, 'id_number':id_number, 'doctor_name':doctor_name})
-        set_appointment.invoke({'desired_date':new_date, 'id_number': id_number, 'doctor_name': doctor_name})
-        return "Successfully rescheduled for the desired time"
+    try:
+        df = pd.read_csv("data/doctor_availability.csv")
+        
+        # Find all appointments for this user (both active and cancelled)
+        appointments = df[df['patient_to_attend'] == id_number.id]
+        
+        if appointments.empty:
+            return f"No appointments found for user {id_number.id}"
+        
+        def format_datetime(datetime_str):
+            """Format datetime string to be more readable"""
+            try:
+                from datetime import datetime
+                # Parse the datetime string (format: DD-MM-YYYY HH:MM)
+                dt = datetime.strptime(datetime_str, "%d-%m-%Y %H:%M")
+                
+                # Format date
+                date_formatted = dt.strftime("%A, %B %d, %Y")
+                
+                # Format time in 12-hour format
+                time_formatted = dt.strftime("%I:%M %p")
+                
+                return f"{date_formatted} at {time_formatted}"
+            except:
+                return datetime_str  # Return original if parsing fails
+        
+        def format_doctor_name(name):
+            """Format doctor name to be more readable"""
+            return name.replace('_', ' ').title()
+        
+        def format_specialization(spec):
+            """Format specialization to be more readable"""
+            return spec.replace('_', ' ').title()
+        
+        def get_appointment_status(row):
+            """Determine appointment status based on availability and date"""
+            from datetime import datetime
+            
+            try:
+                # Parse appointment date
+                appointment_date = datetime.strptime(row['date_slot'], "%d-%m-%Y %H:%M")
+                current_date = datetime.now()
+                
+                if row['is_available'] == True:
+                    return "CANCELLED"
+                elif appointment_date < current_date:
+                    return "COMPLETED"
+                else:
+                    return "UPCOMING"
+            except:
+                return "ACTIVE" if row['is_available'] == False else "CANCELLED"
+        
+        def get_status_emoji(status):
+            """Get emoji for appointment status"""
+            status_emojis = {
+                "UPCOMING": "🟢",
+                "COMPLETED": "✅", 
+                "CANCELLED": "❌",
+                "ACTIVE": "🟢"
+            }
+            return status_emojis.get(status, "📋")
+        
+        # Sort appointments by date (newest first)
+        appointments = appointments.sort_values('date_slot', ascending=False)
+        
+        result = f"📋 Appointment History for User {id_number.id}:\n\n"
+        
+        # Group appointments by status
+        upcoming_count = 0
+        completed_count = 0
+        cancelled_count = 0
+        
+        for i, (_, row) in enumerate(appointments.iterrows()):
+            # Convert index to letter (0=a, 1=b, 2=c, etc.)
+            appointment_letter = chr(ord('a') + i)
+            formatted_datetime = format_datetime(row['date_slot'])
+            formatted_doctor = format_doctor_name(row['doctor_name'])
+            formatted_spec = format_specialization(row['specialization'])
+            status = get_appointment_status(row)
+            status_emoji = get_status_emoji(status)
+            
+            result += f"{appointment_letter}. {status_emoji} Dr. {formatted_doctor}\n"
+            result += f"   📅 Date & Time: {formatted_datetime}\n"
+            result += f"   🏥 Specialization: {formatted_spec}\n"
+            result += f"   📊 Status: {status}\n\n"
+            
+            # Count by status
+            if status == "UPCOMING":
+                upcoming_count += 1
+            elif status == "COMPLETED":
+                completed_count += 1
+            elif status == "CANCELLED":
+                cancelled_count += 1
+        
+        # Add summary
+        result += f"📊 Summary:\n"
+        result += f"   🟢 Upcoming: {upcoming_count}\n"
+        result += f"   ✅ Completed: {completed_count}\n"
+        result += f"   ❌ Cancelled: {cancelled_count}\n"
+        
+        return result
+        
+    except Exception as e:
+        return f"Error getting appointments: {str(e)}"
